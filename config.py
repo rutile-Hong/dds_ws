@@ -66,7 +66,7 @@ class QoSConfig:
 class PIDGains:
 
     # Position loop
-    y_kp: float = 0.8  #0.9 15V,
+    y_kp: float = 1.5  #0.9 15V,
     y_ki: float = 0.0   #0.05
     y_kd: float = 0.0
 
@@ -75,10 +75,12 @@ class PIDGains:
     z_kd: float = 0.0
 
     # Velocity loop
-    vy_kp: float = 3.0  #4.0 15V
-    vy_ki: float = 1.8  #1.5 15V, 2.0: decrease
-    vy_kd: float = 0.2   #0.1
+    vy_kp: float = 4.0  #4.0 15V 2.5
+    vy_ki: float = 1.0  #1.5 15V, 2.0: decrease, 1.8
+    vy_kd: float = 0.33   #0.1
 
     vz_kp: float = 0.35
     vz_ki: float = 0.35
     vz_kd: float = 0.02
+
+    FF_kp: float = 5.0

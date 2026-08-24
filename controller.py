@@ -51,6 +51,13 @@ class CascadePIDController:
         self.thrust_min = vehicle.thrust_min
         self.thrust_max = vehicle.thrust_max
 
+        # Internal shaped velocity target
+        self.vy_target_shaped = 0.0
+        self.ay_target_shaped = 0.0
+        self.trajectory_accel = 1.0   # m/s^2
+        self.trajectory_jerk = 1.0     # m/s^3
+        self.max_lateral_accel = 9.0  # m/s^2      # m/s^3
+
         #################################################
         # Position PIDs
         #################################################
@@ -87,6 +94,9 @@ class CascadePIDController:
             output_limits=(-0.2, 0.2),
         )
 
+        self.ff_kp = gains.FF_kp
+
+
     ###########################################################
     # Public API
     ###########################################################
@@ -98,6 +108,9 @@ class CascadePIDController:
 
         self.pid_vy.reset()
         self.pid_vz.reset()
+
+        self.vy_target_shaped = 0.0
+        self.ay_target_shaped = 0.0
 
     ###########################################################
     # Utility Functions
@@ -143,6 +156,228 @@ class CascadePIDController:
         return value
 
     ###########################################################
+    # Velocity Target Shaping
+    ###########################################################
+
+    def shape_velocity_target(
+        self,
+        vy_target_raw,
+        dt,
+    ):
+        """
+        Generate a smooth velocity target and acceleration
+        feed-forward using acceleration and jerk limits.
+
+        Inputs
+        ------
+        vy_target_raw : float
+            Raw velocity target from position controller [m/s]
+
+        dt : float
+            Controller timestep [s]
+
+        Returns
+        -------
+        vy_desired : float
+            Shaped velocity target [m/s]
+
+        ay_feedforward : float
+            Desired lateral acceleration feed-forward [m/s^2]
+        """
+
+        #################################################
+        # Safety check
+        #################################################
+
+        if dt <= 0.0:
+
+            return (
+                self.vy_target_shaped,
+                self.ay_target_shaped,
+            )
+
+        #################################################
+        # Velocity error of trajectory generator
+        #################################################
+
+        velocity_error = (
+            vy_target_raw
+            - self.vy_target_shaped
+        )
+
+        #################################################
+        # Determine requested acceleration
+        #
+        # Use stopping distance to decide when to
+        # start reducing acceleration.
+        #
+        # stopping distance:
+        #
+        # dv = a^2 / (2*j)
+        #
+        #################################################
+
+        accel_abs = abs(
+            self.ay_target_shaped
+        )
+
+        if self.trajectory_jerk > 0.0:
+
+            stopping_velocity = (
+                accel_abs * accel_abs
+                / (
+                    2.0
+                    * self.trajectory_jerk
+                )
+            )
+
+        else:
+
+            stopping_velocity = 0.0
+
+        #################################################
+        # Requested acceleration
+        #################################################
+
+        if abs(velocity_error) < 1e-6:
+
+            # Already at target velocity
+            ay_requested = 0.0
+
+        elif (
+            abs(velocity_error)
+            <= stopping_velocity
+        ):
+
+            # We are getting close to the requested
+            # velocity.
+            #
+            # Start reducing acceleration so that the
+            # trajectory does not strongly overshoot.
+            ay_requested = 0.0
+
+        elif velocity_error > 0.0:
+
+            ay_requested = (
+                self.trajectory_accel
+            )
+
+        else:
+
+            ay_requested = (
+                -self.trajectory_accel
+            )
+
+        #################################################
+        # Jerk limit
+        #
+        # jerk = da / dt
+        #
+        # therefore:
+        #
+        # max_da = jerk_max * dt
+        #################################################
+
+        max_da = (
+            self.trajectory_jerk
+            * dt
+        )
+
+        da_requested = (
+            ay_requested
+            - self.ay_target_shaped
+        )
+
+        da = self.clamp(
+            da_requested,
+            -max_da,
+            max_da,
+        )
+
+        #################################################
+        # Update shaped acceleration
+        #################################################
+
+        self.ay_target_shaped += da
+
+        #################################################
+        # Acceleration safety limit
+        #################################################
+
+        self.ay_target_shaped = self.clamp(
+            self.ay_target_shaped,
+            -self.trajectory_accel,
+            self.trajectory_accel,
+        )
+
+        #################################################
+        # Integrate acceleration -> velocity
+        #################################################
+
+        old_vy_target = (
+            self.vy_target_shaped
+        )
+
+        self.vy_target_shaped += (
+            self.ay_target_shaped
+            * dt
+        )
+
+        #################################################
+        # Prevent crossing the requested velocity target
+        #
+        # Example:
+        #
+        # requested = 0.20
+        # calculated = 0.205
+        #
+        # clamp it back to 0.20
+        #################################################
+
+        if velocity_error > 0.0:
+
+            if (
+                self.vy_target_shaped
+                > vy_target_raw
+            ):
+
+                self.vy_target_shaped = (
+                    vy_target_raw
+                )
+
+                self.ay_target_shaped = 0.0
+
+        elif velocity_error < 0.0:
+
+            if (
+                self.vy_target_shaped
+                < vy_target_raw
+            ):
+
+                self.vy_target_shaped = (
+                    vy_target_raw
+                )
+
+                self.ay_target_shaped = 0.0
+
+        #################################################
+        # Acceleration Feed Forward
+        #################################################
+
+        ay_feedforward = (
+            self.ay_target_shaped
+        )
+
+        #################################################
+        # Return trajectory states
+        #################################################
+
+        return (
+            self.vy_target_shaped,
+            ay_feedforward,
+        )
+
+    ###########################################################
     # Position Loop
     ###########################################################
 
@@ -156,7 +391,7 @@ class CascadePIDController:
         self.pid_y.setpoint = reference.y
         self.pid_z.setpoint = reference.z
 
-        vy_desired = self.pid_y.update(
+        vy_target_raw = self.pid_y.update(
             y,
             dt,
         )
@@ -165,9 +400,17 @@ class CascadePIDController:
             dt,
         )
 
+        vy_desired, ay_feedforward = (
+            self.shape_velocity_target(
+                vy_target_raw,
+                dt,
+            )
+        )
+
         return (
             vy_desired,
             vz_desired,
+            ay_feedforward,
         )
 
     ###########################################################
@@ -233,6 +476,7 @@ class CascadePIDController:
         vz,
         vy_desired,
         vz_desired,
+        ay_feedforward,
         dt,
     ):
 
@@ -245,9 +489,14 @@ class CascadePIDController:
         # Output is desired lateral acceleration [m/s^2]
         #################################################
 
-        ay_desired = self.pid_vy.update(
+        ay_feedback = self.pid_vy.update(
             vy,
             dt,
+        )
+
+        ay_desired = (
+            self.ff_kp*ay_feedforward
+            + ay_feedback
         )
 
         #################################################
@@ -354,7 +603,7 @@ class CascadePIDController:
         # Position controller
         #################################################
 
-        vy_desired, vz_desired = self.position_controller(
+        vy_desired, vz_desired, ay_feedforward = self.position_controller(
             y_actual,
             state.z,
             reference,
@@ -371,6 +620,7 @@ class CascadePIDController:
             state.vz,
             vy_desired,
             vz_desired,
+            ay_feedforward,
             dt,
         )
 
