@@ -23,7 +23,8 @@ class VehicleConfig:
     thrust_max: float = 1.0
 
     max_roll_deg: float = 45.0
-
+    # Maximum desired roll rate
+    max_roll_rate_deg: float = 120.0
 
 # ---------------------------------------------------
 # Manual motion
