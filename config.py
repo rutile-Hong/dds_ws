@@ -82,3 +82,11 @@ class PIDGains:
     vz_kp: float = 0.35
     vz_ki: float = 0.35
     vz_kd: float = 0.02
+    
+    # Roll angle -> roll rate
+    roll_angle_kp = 4.0
+    
+    # Roll rate PID
+    rate_roll_kp = 0.15
+    rate_roll_ki = 0.05
+    rate_roll_kd = 0.002
